@@ -23,9 +23,9 @@ static rtems_task Init(
   rtems_print_printer_fprintf_putc(&rtems_test_printer);
   TEST_BEGIN();
   printf( "\tHello World\n" );
-  printf( "\tIts Vaibhav Gupta here!" );
-  printf( "\tMy pseudonym is VARoDeK" );
-  printf( "\tNice to meet you all!" );
+  printf( "\tIts Vaibhav Gupta here!\n" );
+  printf( "\tMy pseudonym is VARoDeK\n" );
+  printf( "\tNice to meet you all!\n" );
   TEST_END();
   rtems_test_exit( 0 );
 }
