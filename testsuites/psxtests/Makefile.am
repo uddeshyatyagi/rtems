@@ -22,6 +22,13 @@ psx01_CPPFLAGS = $(AM_CPPFLAGS) $(TEST_FLAGS_psx01) \
 	$(support_includes) -I$(top_srcdir)/include
 endif
 
+if TEST_psxinttypes01
+psx_tests += psxinttypes01
+psxinttypes01_SOURCES = psxinttypes01/init.c
+psxinttypes01_CPPFLAGS = $(AM_CPPFLAGS) $(TEST_FLAGS_psxinttypes01) \
+	$(support_includes)
+endif
+
 if HAS_POSIX
 if TEST_psx02
 psx_tests += psx02

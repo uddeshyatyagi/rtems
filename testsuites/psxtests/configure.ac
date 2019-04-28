@@ -140,6 +140,7 @@ RTEMS_TEST_CHECK([psxtimes01])
 RTEMS_TEST_CHECK([psxualarm])
 RTEMS_TEST_CHECK([psxusleep])
 RTEMS_TEST_CHECK([lib_a])
+RTEMS_TEST_CHECK([psxinttypes01])
 
 AC_CONFIG_FILES([Makefile])
 AC_OUTPUT

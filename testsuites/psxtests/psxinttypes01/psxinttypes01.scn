@@ -1,0 +1,28 @@
+*** PSXINTTYPE 01 TEST ***
+
+Checking invalid base value
+Strtoimax Testcases....
+Generating Status
+Checking Garbage end of endptr
+Checking Underflow Case
+Checking Overflow Case
+status = 123 
+Strtoumax Testcases....
+Generating Status
+Checking Garbage end of endptr
+Checking Overflow Case
+status = 123 
+Wcstoimax Testcases....
+Generating Status
+Checking Garbage end of endptr
+Checking Underflow Case
+Checking Overflow Case
+status = -123 
+wcstoumax Testcases....
+Generating Status
+Checking Garbage end of endptr
+Checking Overflow Case
+status = 18446744073709551493 
+
+*** END OF PSXINTTYPE 01 TEST ***
+
