@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 embedded brains GmbH.  All rights reserved.
+ * Copyright (c) 2014, 2019 embedded brains GmbH.  All rights reserved.
  *
  *  embedded brains GmbH
  *  Dornierstr. 4
@@ -18,7 +18,6 @@
 
 #include <rtems/score/smpimpl.h>
 #include <rtems/score/smpbarrier.h>
-#include <rtems/counter.h>
 #include <rtems.h>
 
 #include <stdio.h>
@@ -40,6 +39,7 @@ typedef struct {
   SMP_barrier_Control barrier;
   SMP_barrier_State main_barrier_state;
   SMP_barrier_State worker_barrier_state;
+  Per_CPU_Job jobs[CPU_COUNT][2];
 } test_context;
 
 static test_context test_instance = {
@@ -56,10 +56,27 @@ static void barrier(
   _SMP_barrier_Wait(&ctx->barrier, state, 2);
 }
 
-static void barrier_handler(Per_CPU_Control *cpu_self)
+static void barrier_1_handler(void *arg)
 {
-  test_context *ctx = &test_instance;
-  uint32_t cpu_index_self = _Per_CPU_Get_index(cpu_self);
+  test_context *ctx = arg;
+  uint32_t cpu_index_self = _SMP_Get_current_processor();
+  SMP_barrier_State *bs = &ctx->worker_barrier_state;
+
+  ++ctx->counters[cpu_index_self].value;
+
+  /* (D) */
+  barrier(ctx, bs);
+}
+
+static const Per_CPU_Job_context barrier_1_job_context = {
+  .handler = barrier_1_handler,
+  .arg = &test_instance
+};
+
+static void barrier_0_handler(void *arg)
+{
+  test_context *ctx = arg;
+  uint32_t cpu_index_self = _SMP_Get_current_processor();
   SMP_barrier_State *bs = &ctx->worker_barrier_state;
 
   ++ctx->counters[cpu_index_self].value;
@@ -72,28 +89,44 @@ static void barrier_handler(Per_CPU_Control *cpu_self)
 
   /* (C) */
   barrier(ctx, bs);
+
+  ctx->jobs[0][1].context = &barrier_1_job_context;
+  _Per_CPU_Add_job(_Per_CPU_Get(), &ctx->jobs[0][1]);
 }
 
+static const Per_CPU_Job_context barrier_0_job_context = {
+  .handler = barrier_0_handler,
+  .arg = &test_instance
+};
+
 static void test_send_message_while_processing_a_message(
-  test_context *ctx
+  test_context *ctx,
+  uint32_t cpu_index_self,
+  uint32_t cpu_count
 )
 {
-  uint32_t cpu_count = rtems_scheduler_get_processor_maximum();
-  uint32_t cpu_index_self = rtems_scheduler_get_processor();
-  uint32_t cpu_index;
   SMP_barrier_State *bs = &ctx->main_barrier_state;
+  uint32_t cpu_index;
+  rtems_status_code sc;
+  cpu_set_t cpuset;
 
-  _SMP_Set_test_message_handler(barrier_handler);
+  rtems_test_assert(cpu_index_self < CPU_SETSIZE);
+  CPU_ZERO(&cpuset);
+  CPU_SET((int) cpu_index_self, &cpuset);
+  sc = rtems_task_set_affinity(RTEMS_SELF, sizeof(cpuset), &cpuset);
+  rtems_test_assert(sc == RTEMS_SUCCESSFUL);
 
   for (cpu_index = 0; cpu_index < cpu_count; ++cpu_index) {
     if (cpu_index != cpu_index_self) {
-      _SMP_Send_message(cpu_index, SMP_MESSAGE_TEST);
+      ctx->jobs[0][0].context = &barrier_0_job_context;
+      _Per_CPU_Add_job(_Per_CPU_Get_by_index(cpu_index), &ctx->jobs[0][0]);
+      _SMP_Send_message(cpu_index, SMP_MESSAGE_PERFORM_JOBS);
 
       /* (A) */
       barrier(ctx, bs);
 
       rtems_test_assert(ctx->counters[cpu_index].value == 1);
-      _SMP_Send_message(cpu_index, SMP_MESSAGE_TEST);
+      _SMP_Send_message(cpu_index, SMP_MESSAGE_PERFORM_JOBS);
 
       /* (B) */
       barrier(ctx, bs);
@@ -103,45 +136,70 @@ static void test_send_message_while_processing_a_message(
       /* (C) */
       barrier(ctx, bs);
 
-      /* (A) */
+      /* (D) */
       barrier(ctx, bs);
 
       rtems_test_assert(ctx->counters[cpu_index].value == 2);
-
-      /* (B) */
-      barrier(ctx, bs);
-
-      /* (C) */
-      barrier(ctx, bs);
 
       ctx->counters[cpu_index].value = 0;
     }
   }
 }
 
-static void counter_handler(Per_CPU_Control *cpu_self)
+static void counter_handler(void *arg, size_t next_job)
 {
-  test_context *ctx = &test_instance;
+  test_context *ctx = arg;
+  Per_CPU_Control *cpu_self = _Per_CPU_Get();
   uint32_t cpu_index_self = _Per_CPU_Get_index(cpu_self);
 
   ++ctx->counters[cpu_index_self].value;
+  _Per_CPU_Add_job(cpu_self, &ctx->jobs[cpu_index_self][next_job]);
 }
 
+static void counter_0_handler(void *arg)
+{
+  counter_handler(arg, 1);
+}
+
+static const Per_CPU_Job_context counter_0_job_context = {
+  .handler = counter_0_handler,
+  .arg = &test_instance
+};
+
+static void counter_1_handler(void *arg)
+{
+  counter_handler(arg, 0);
+}
+
+static const Per_CPU_Job_context counter_1_job_context = {
+  .handler = counter_1_handler,
+  .arg = &test_instance
+};
+
 static void test_send_message_flood(
-  test_context *ctx
+  test_context *ctx,
+  uint32_t cpu_count
 )
 {
-  uint32_t cpu_count = rtems_scheduler_get_processor_maximum();
   uint32_t cpu_index_self = rtems_scheduler_get_processor();
   uint32_t cpu_index;
 
-  _SMP_Set_test_message_handler(counter_handler);
+  for (cpu_index = 0; cpu_index < cpu_count; ++cpu_index) {
+    Per_CPU_Control *cpu = _Per_CPU_Get_by_index(cpu_index);
+
+    ctx->jobs[cpu_index][0].context = &counter_0_job_context;
+    ctx->jobs[cpu_index][1].context = &counter_1_job_context;
+    _Per_CPU_Add_job(cpu, &ctx->jobs[cpu_index][0]);
+    _SMP_Send_message(cpu_index, SMP_MESSAGE_PERFORM_JOBS);
+  }
 
   for (cpu_index = 0; cpu_index < cpu_count; ++cpu_index) {
+    Per_CPU_Control *cpu_self;
     uint32_t i;
 
-    /* Wait 1us so that all outstanding messages have been processed */
-    rtems_counter_delay_nanoseconds(1000000);
+    cpu_self = _Thread_Dispatch_disable();
+    _SMP_Synchronize();
+    _Thread_Dispatch_enable(cpu_self);
 
     for (i = 0; i < cpu_count; ++i) {
       if (i != cpu_index) {
@@ -150,7 +208,7 @@ static void test_send_message_flood(
     }
 
     for (i = 0; i < 100000; ++i) {
-      _SMP_Send_message(cpu_index, SMP_MESSAGE_TEST);
+      _SMP_Send_message(cpu_index, SMP_MESSAGE_PERFORM_JOBS);
     }
 
     for (i = 0; i < cpu_count; ++i) {
@@ -184,9 +242,14 @@ static void test_send_message_flood(
 static void test(void)
 {
   test_context *ctx = &test_instance;
+  uint32_t cpu_count = rtems_scheduler_get_processor_maximum();
+  uint32_t cpu_index_self;
 
-  test_send_message_while_processing_a_message(ctx);
-  test_send_message_flood(ctx);
+  for (cpu_index_self = 0; cpu_index_self < cpu_count; ++cpu_index_self) {
+    test_send_message_while_processing_a_message(ctx, cpu_index_self, cpu_count);
+  }
+
+  test_send_message_flood(ctx, cpu_count);
 }
 
 static void Init(rtems_task_argument arg)

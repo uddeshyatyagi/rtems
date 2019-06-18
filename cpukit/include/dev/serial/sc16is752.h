@@ -31,7 +31,18 @@ extern "C" {
 
 typedef enum {
   SC16IS752_MODE_RS232,
-  SC16IS752_MODE_RS485
+
+  /* Enable RS485 mode */
+  SC16IS752_MODE_RS485,
+
+  /* Enable RS485 mode, enable the transmitter to control the #RTS pin */
+  SC16IS752_MODE_RS485_RTS,
+
+  /*
+   * Enable RS485 mode, enable the transmitter to control the #RTS pin, invert
+   * RTS signal (#RTS = 1 during transmission and #RTS = 0 during reception)
+   */
+  SC16IS752_MODE_RS485_RTS_INV
 } sc16is752_mode;
 
 typedef struct sc16is752_context sc16is752_context;
@@ -269,6 +280,11 @@ rtems_status_code sc16is752_spi_create(
 #define SC16IS752_SET_IOSTATE _IOW('d', 3, uint8_t)
 
 /**
+ * @brief Set the EFCR register.
+ */
+#define SC16IS752_SET_EFCR _IOW('d', 4, uint8_t)
+
+/**
  * @brief Returns non-zero in case the sleep mode is enabled, otherwise zero.
  */
 #define SC16IS752_GET_SLEEP_MODE _IOR('d', 0, int)
@@ -287,6 +303,11 @@ rtems_status_code sc16is752_spi_create(
  * @brief Read the I/O pins state register.
  */
 #define SC16IS752_GET_IOSTATE _IOR('d', 3, uint8_t)
+
+/**
+ * @brief Read the EFCR register.
+ */
+#define SC16IS752_GET_EFCR _IOR('d', 4, uint8_t)
 
 /**
  * @brief Bits for the IOCONTROL register.

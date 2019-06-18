@@ -212,6 +212,7 @@ static bool sc16is752_first_open(
 {
   bool ok;
   uint8_t fcr;
+  uint8_t efcr;
 
   (void)args;
   sc16is752_context *ctx = (sc16is752_context *)base;
@@ -223,12 +224,23 @@ static bool sc16is752_first_open(
     return ok;
   }
 
-  if (ctx->mode == SC16IS752_MODE_RS485) {
-    ctx->efcr = SC16IS752_EFCR_RS485_ENABLE;
-  } else {
-    ctx->efcr = 0;
+  efcr = 0;
+
+  switch (ctx->mode) {
+    case SC16IS752_MODE_RS485_RTS_INV:
+      efcr |= SC16IS752_EFCR_RTSINVER;
+      /* Fall through */
+    case SC16IS752_MODE_RS485_RTS:
+      efcr |= SC16IS752_EFCR_RTSCON;
+      /* Fall through */
+    case SC16IS752_MODE_RS485:
+      efcr |= SC16IS752_EFCR_RS485_ENABLE;
+      break;
+    default:
+      break;
   }
 
+  ctx->efcr = efcr;
   write_reg(ctx, SC16IS752_FCR, &ctx->efcr, 1);
 
   fcr = SC16IS752_FCR_FIFO_EN
@@ -387,6 +399,12 @@ static int sc16is752_ioctl(
       break;
     case SC16IS752_GET_IOSTATE:
       read_reg(ctx, SC16IS752_IOSTATE, (uint8_t *)buffer, 1);
+      break;
+    case SC16IS752_SET_EFCR:
+      write_reg(ctx, SC16IS752_EFCR, (uint8_t *)buffer, 1);
+      break;
+    case SC16IS752_GET_EFCR:
+      read_reg(ctx, SC16IS752_EFCR, (uint8_t *)buffer, 1);
       break;
     case TIOCMGET:
       sc16is752_get_modem_bits(ctx, (int *)buffer);

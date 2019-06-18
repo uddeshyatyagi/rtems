@@ -22,7 +22,6 @@
 #include <rtems/score/percpu.h>
 #include <rtems/score/processormask.h>
 #include <rtems/fatal.h>
-#include <rtems/rtems/cache.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -44,28 +43,11 @@ extern "C" {
 #define SMP_MESSAGE_SHUTDOWN 0x1UL
 
 /**
- * @brief SMP message to request a test handler invocation.
- *
- * @see _SMP_Send_message().
- */
-#define SMP_MESSAGE_TEST 0x2UL
-
-/**
  * @brief SMP message to perform per-processor jobs.
  *
  * @see _SMP_Send_message().
  */
-#define SMP_MESSAGE_PERFORM_JOBS 0x4UL
-
-/**
- * @brief SMP message to request a clock tick.
- *
- * This message is provided for systems without a proper interrupt affinity
- * support and may be used by the clock driver.
- *
- * @see _SMP_Send_message().
- */
-#define SMP_MESSAGE_CLOCK_TICK 0x8UL
+#define SMP_MESSAGE_PERFORM_JOBS 0x2UL
 
 /**
  * @brief SMP fatal codes.
@@ -146,25 +128,6 @@ void _SMP_Start_multitasking_on_secondary_processor(
   Per_CPU_Control *cpu_self
 ) RTEMS_NO_RETURN;
 
-typedef void ( *SMP_Test_message_handler )( Per_CPU_Control *cpu_self );
-
-extern SMP_Test_message_handler _SMP_Test_message_handler;
-
-/**
- * @brief Sets the handler for test messages.
- *
- * This handler can be used to test the inter-processor interrupt
- * implementation.
- *
- * @param handler The handler for text messages.
- */
-static inline void _SMP_Set_test_message_handler(
-  SMP_Test_message_handler handler
-)
-{
-  _SMP_Test_message_handler = handler;
-}
-
 /**
  * @brief Interrupts handler for inter-processor interrupts.
  *
@@ -194,10 +157,6 @@ static inline long unsigned _SMP_Inter_processor_interrupt_handler(
     if ( ( message & SMP_MESSAGE_SHUTDOWN ) != 0 ) {
       _SMP_Fatal( SMP_FATAL_SHUTDOWN_RESPONSE );
       /* does not continue past here */
-    }
-
-    if ( ( message & SMP_MESSAGE_TEST ) != 0 ) {
-      ( *_SMP_Test_message_handler )( cpu_self );
     }
 
     if ( ( message & SMP_MESSAGE_PERFORM_JOBS ) != 0 ) {
@@ -253,12 +212,15 @@ void _SMP_Send_message_multicast(
 typedef void ( *SMP_Action_handler )( void *arg );
 
 /**
- * @brief Initiates an SMP multicast action to a set of target processors.
+ * @brief Initiates an SMP multicast action to the set of target processors.
  *
- * The current processor may be part of the set.
+ * The current processor may be part of the set.  The caller must ensure that
+ * no thread dispatch can happen during the call of this function, otherwise
+ * the behaviour is undefined.  In case a target processor is in a wrong state
+ * to process per-processor jobs, then this function results in an
+ * SMP_FATAL_WRONG_CPU_STATE_TO_PERFORM_JOBS fatal SMP error.
  *
- * @param targets The set of target processors for the action.  If @c NULL,
- *   then the action will be performed on all online processors.
+ * @param targets The set of target processors for the action.
  * @param handler The multicast action handler.
  * @param arg The multicast action argument.
  */
@@ -267,6 +229,59 @@ void _SMP_Multicast_action(
   SMP_Action_handler    handler,
   void                 *arg
 );
+
+/**
+ * @brief Initiates an SMP multicast action to the set of all online
+ * processors.
+ *
+ * Simply calls _SMP_Multicast_action() with _SMP_Get_online_processors() as
+ * the target processor set.
+ *
+ * @param handler The multicast action handler.
+ * @param arg The multicast action argument.
+ */
+void _SMP_Broadcast_action(
+  SMP_Action_handler  handler,
+  void               *arg
+);
+
+/**
+ * @brief Initiates an SMP multicast action to the set of all online
+ * processors excluding the current processor.
+ *
+ * Simply calls _SMP_Multicast_action() with _SMP_Get_online_processors() as
+ * the target processor set excluding the current processor.
+ *
+ * @param handler The multicast action handler.
+ * @param arg The multicast action argument.
+ */
+void _SMP_Othercast_action(
+  SMP_Action_handler  handler,
+  void               *arg
+);
+
+/**
+ * @brief Initiates an SMP action on the specified target processor.
+ *
+ * This is an optimized variant of _SMP_Multicast_action().
+ *
+ * @param cpu_index The index of the target processor.
+ * @param handler The action handler.
+ * @param arg The action argument.
+ */
+void _SMP_Unicast_action(
+  uint32_t            cpu_index,
+  SMP_Action_handler  handler,
+  void               *arg
+);
+
+/**
+ * @brief Ensures that all store operations issued by the current processor
+ * before the call this function are visible to all other online processors.
+ *
+ * Simply calls _SMP_Othercast_action() with an empty multicast action.
+ */
+void _SMP_Synchronize( void );
 
 #endif /* defined( RTEMS_SMP ) */
 

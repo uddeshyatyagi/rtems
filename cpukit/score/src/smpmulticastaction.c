@@ -31,89 +31,54 @@
 
 #include <rtems/score/smpimpl.h>
 #include <rtems/score/assert.h>
-#include <rtems/score/threaddispatch.h>
 
-typedef struct Per_CPU_Job Per_CPU_Job;
+#define _Per_CPU_Jobs_ISR_disable_and_acquire( cpu, lock_context ) \
+  _ISR_lock_ISR_disable_and_acquire( &( cpu )->Jobs.Lock, lock_context )
 
-typedef struct Per_CPU_Jobs Per_CPU_Jobs;
-
-/*
- * Value for the Per_CPU_Job::done member to indicate that a job is done
- * (handler was called on the target processor).  Must not be a valid pointer
- * value since it overlaps with the Per_CPU_Job::next member.
- */
-#define PER_CPU_JOB_DONE 1
-
-/**
- * @brief A per-processor job.
- */
-struct Per_CPU_Job {
-  union {
-    /**
-     * @brief The next job in the corresponding per-processor job list.
-     */
-    Per_CPU_Job *next;
-
-    /**
-     * @brief Indication if the job is done.
-     *
-     * A job is done if this member has the value PER_CPU_JOB_DONE.  This
-     * assumes that PER_CPU_JOB_DONE is not a valid pointer value.
-     */
-    Atomic_Ulong done;
-  };
-
-  /**
-   * @brief Back pointer to the jobs to get the handler and argument.
-   */
-  Per_CPU_Jobs *jobs;
-};
-
-/**
- * @brief A collection of jobs, one for each processor.
- */
-struct Per_CPU_Jobs {
-  /**
-   * @brief The job handler.
-   */
-  SMP_Action_handler handler;
-
-  /**
-   * @brief The job handler argument.
-   */
-  void *arg;
-
-  /**
-   * @brief One job for each potential processor.
-   */
-  Per_CPU_Job Jobs[ CPU_MAXIMUM_PROCESSORS ];
-};
+#define _Per_CPU_Jobs_release_and_ISR_enable( cpu, lock_context ) \
+  _ISR_lock_Release_and_ISR_enable( &( cpu )->Jobs.Lock, lock_context )
 
 void _Per_CPU_Perform_jobs( Per_CPU_Control *cpu )
 {
   ISR_lock_Context  lock_context;
   Per_CPU_Job      *job;
 
-  _ISR_lock_ISR_disable( &lock_context );
-  _Per_CPU_Acquire( cpu, &lock_context );
+  _Per_CPU_Jobs_ISR_disable_and_acquire( cpu, &lock_context );
+  job = cpu->Jobs.head;
+  cpu->Jobs.head = NULL;
+  _Per_CPU_Jobs_release_and_ISR_enable( cpu, &lock_context );
 
-  while ( ( job = cpu->Jobs.head ) != NULL ) {
-    Per_CPU_Jobs *jobs;
+  while ( job != NULL ) {
+    const Per_CPU_Job_context *context;
+    Per_CPU_Job               *next;
 
-    cpu->Jobs.head = job->next;
-    _Per_CPU_Release( cpu, &lock_context );
-    _ISR_lock_ISR_enable( &lock_context );
-
-    jobs = job->jobs;
-    ( *jobs->handler )( jobs->arg );
+    context = job->context;
+    next = job->next;
+    ( *context->handler )( context->arg );
     _Atomic_Store_ulong( &job->done, PER_CPU_JOB_DONE, ATOMIC_ORDER_RELEASE );
 
-     _ISR_lock_ISR_disable( &lock_context );
-    _Per_CPU_Acquire( cpu, &lock_context );
+    job = next;
+  }
+}
+
+void _Per_CPU_Add_job( Per_CPU_Control *cpu, Per_CPU_Job *job )
+{
+  ISR_lock_Context lock_context;
+
+  _Atomic_Store_ulong( &job->done, 0, ATOMIC_ORDER_RELAXED );
+  _Assert( job->next == NULL );
+
+  _Per_CPU_Jobs_ISR_disable_and_acquire( cpu, &lock_context );
+
+  if ( cpu->Jobs.head == NULL ) {
+    cpu->Jobs.head = job;
+  } else {
+    *cpu->Jobs.tail = job;
   }
 
-  _Per_CPU_Release( cpu, &lock_context );
-  _ISR_lock_ISR_enable( &lock_context );
+  cpu->Jobs.tail = &job->next;
+
+  _Per_CPU_Jobs_release_and_ISR_enable( cpu, &lock_context );
 }
 
 static void _Per_CPU_Try_perform_jobs( Per_CPU_Control *cpu_self )
@@ -137,9 +102,44 @@ static void _Per_CPU_Try_perform_jobs( Per_CPU_Control *cpu_self )
   }
 }
 
+void _Per_CPU_Wait_for_job(
+  const Per_CPU_Control *cpu,
+  const Per_CPU_Job     *job
+)
+{
+  while (
+    _Atomic_Load_ulong( &job->done, ATOMIC_ORDER_ACQUIRE )
+      != PER_CPU_JOB_DONE
+  ) {
+    switch ( cpu->state ) {
+      case PER_CPU_STATE_INITIAL:
+      case PER_CPU_STATE_READY_TO_START_MULTITASKING:
+      case PER_CPU_STATE_REQUEST_START_MULTITASKING:
+        _CPU_SMP_Processor_event_broadcast();
+        /* Fall through */
+      case PER_CPU_STATE_UP:
+        /*
+         * Calling this function with the current processor is intentional.
+         * We have to perform our own jobs here in case inter-processor
+         * interrupts are not working.
+         */
+        _Per_CPU_Try_perform_jobs( _Per_CPU_Get() );
+        break;
+      default:
+        _SMP_Fatal( SMP_FATAL_WRONG_CPU_STATE_TO_PERFORM_JOBS );
+        break;
+    }
+  }
+}
+
+typedef struct {
+  Per_CPU_Job_context Context;
+  Per_CPU_Job         Jobs[ CPU_MAXIMUM_PROCESSORS ];
+} SMP_Multicast_jobs;
+
 static void _SMP_Issue_action_jobs(
   const Processor_mask *targets,
-  Per_CPU_Jobs         *jobs,
+  SMP_Multicast_jobs   *jobs,
   uint32_t              cpu_max
 )
 {
@@ -147,74 +147,35 @@ static void _SMP_Issue_action_jobs(
 
   for ( cpu_index = 0; cpu_index < cpu_max; ++cpu_index ) {
     if ( _Processor_mask_Is_set( targets, cpu_index ) ) {
-      ISR_lock_Context  lock_context;
-      Per_CPU_Job      *job;
-      Per_CPU_Control  *cpu;
+      Per_CPU_Job     *job;
+      Per_CPU_Control *cpu;
 
       job = &jobs->Jobs[ cpu_index ];
-      _Atomic_Store_ulong( &job->done, 0, ATOMIC_ORDER_RELAXED );
-      _Assert( job->next == NULL );
-      job->jobs = jobs;
-
+      job->context = &jobs->Context;
       cpu = _Per_CPU_Get_by_index( cpu_index );
-      _ISR_lock_ISR_disable( &lock_context );
-      _Per_CPU_Acquire( cpu, &lock_context );
 
-      if ( cpu->Jobs.head == NULL ) {
-        cpu->Jobs.head = job;
-      } else {
-        *cpu->Jobs.tail = job;
-      }
-
-      cpu->Jobs.tail = &job->next;
-
-      _Per_CPU_Release( cpu, &lock_context );
-      _ISR_lock_ISR_enable( &lock_context );
+      _Per_CPU_Add_job( cpu, job );
       _SMP_Send_message( cpu_index, SMP_MESSAGE_PERFORM_JOBS );
     }
   }
 }
 
 static void _SMP_Wait_for_action_jobs(
-  const Processor_mask *targets,
-  const Per_CPU_Jobs   *jobs,
-  uint32_t              cpu_max,
-  Per_CPU_Control      *cpu_self
+  const Processor_mask     *targets,
+  const SMP_Multicast_jobs *jobs,
+  uint32_t                  cpu_max
 )
 {
   uint32_t cpu_index;
 
   for ( cpu_index = 0; cpu_index < cpu_max; ++cpu_index ) {
     if ( _Processor_mask_Is_set( targets, cpu_index ) ) {
-      const Per_CPU_Job *job;
-      Per_CPU_Control   *cpu;
+      const Per_CPU_Control *cpu;
+      const Per_CPU_Job     *job;
 
-      job = &jobs->Jobs[ cpu_index ];
       cpu = _Per_CPU_Get_by_index( cpu_index );
-
-      while (
-        _Atomic_Load_ulong( &job->done, ATOMIC_ORDER_ACQUIRE )
-          != PER_CPU_JOB_DONE
-      ) {
-        switch ( cpu->state ) {
-          case PER_CPU_STATE_INITIAL:
-          case PER_CPU_STATE_READY_TO_START_MULTITASKING:
-          case PER_CPU_STATE_REQUEST_START_MULTITASKING:
-            _CPU_SMP_Processor_event_broadcast();
-            /* Fall through */
-          case PER_CPU_STATE_UP:
-            /*
-             * Calling this function with the current processor is intentional.
-             * We have to perform our own jobs here in case inter-processor
-             * interrupts are not working.
-             */
-            _Per_CPU_Try_perform_jobs( cpu_self );
-            break;
-          default:
-            _SMP_Fatal( SMP_FATAL_WRONG_CPU_STATE_TO_PERFORM_JOBS );
-            break;
-        }
-      }
+      job = &jobs->Jobs[ cpu_index ];
+      _Per_CPU_Wait_for_job( cpu, job );
     }
   }
 }
@@ -225,32 +186,45 @@ void _SMP_Multicast_action(
   void                 *arg
 )
 {
-  Per_CPU_Jobs     jobs;
-  uint32_t         cpu_max;
-  Per_CPU_Control *cpu_self;
-  uint32_t         isr_level;
+  SMP_Multicast_jobs jobs;
+  uint32_t           cpu_max;
 
   cpu_max = _SMP_Get_processor_maximum();
-  _Assert( cpu_max <= CPU_MAXIMUM_PROCESSORS );
+  _Assert( cpu_max <= RTEMS_ARRAY_SIZE( jobs.Jobs ) );
 
-  if ( targets == NULL ) {
-    targets = _SMP_Get_online_processors();
-  }
-
-  jobs.handler = handler;
-  jobs.arg = arg;
-  isr_level = _ISR_Get_level();
-
-  if ( isr_level == 0 ) {
-    cpu_self = _Thread_Dispatch_disable();
-  } else {
-    cpu_self = _Per_CPU_Get();
-  }
+  jobs.Context.handler = handler;
+  jobs.Context.arg = arg;
 
   _SMP_Issue_action_jobs( targets, &jobs, cpu_max );
-  _SMP_Wait_for_action_jobs( targets, &jobs, cpu_max, cpu_self );
+  _SMP_Wait_for_action_jobs( targets, &jobs, cpu_max );
+}
 
-  if ( isr_level == 0 ) {
-    _Thread_Dispatch_enable( cpu_self );
-  }
+void _SMP_Broadcast_action(
+  SMP_Action_handler  handler,
+  void               *arg
+)
+{
+  _SMP_Multicast_action( _SMP_Get_online_processors(), handler, arg );
+}
+
+void _SMP_Othercast_action(
+  SMP_Action_handler  handler,
+  void               *arg
+)
+{
+  Processor_mask targets;
+
+  _Processor_mask_Assign( &targets, _SMP_Get_online_processors() );
+  _Processor_mask_Clear( &targets, _SMP_Get_current_processor() );
+  _SMP_Multicast_action( &targets, handler, arg );
+}
+
+static void _SMP_Do_nothing_action( void *arg )
+{
+  /* Do nothing */
+}
+
+void _SMP_Synchronize( void )
+{
+  _SMP_Othercast_action( _SMP_Do_nothing_action, NULL );
 }
