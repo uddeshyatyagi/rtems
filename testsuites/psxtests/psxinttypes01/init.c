@@ -42,6 +42,13 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include <ndbm.h>
+#include <fcntl.h>
+
+#define NAME     "Vaibhav Gupta XYZ"
+#define PHONE_NO "123-321"
+#define DB_NAME  "phones_test"
+
 const char rtems_test_name[] = "PSXINTTYPE 01";
 
 /* forward declarations to avoid warnings */
@@ -212,6 +219,25 @@ rtems_task Init(rtems_task_argument ignored)
   result_strtoumax = wcstoumax( nptr2_p, &endptr2, invalid_base );
   rtems_test_assert( result_strtoumax == 0 );
   rtems_test_assert( errno == EINVAL );
+
+  DBM *db;
+
+  datum name = { NAME , sizeof(NAME) };
+  datum put_phone_no = { PHONE_NO, sizeof(PHONE_NO) };
+  datum get_phone_no;
+
+  //open the database and store the record
+
+  db = dbm_open( DB_NAME , 0600 , O_RDWR | O_CREAT );
+  dbm_store( db , name , put_phone_no , DBM_INSERT );
+
+  //Retrive the record
+  //
+  get_phone_no = dbm_fetch( db , name );
+  printf( "\n\nName: %s, \nPhone Number: %s", (char *)name.dptr , (char *)get_phone_no.dptr );
+
+  dbm_close(db);
+
 
   TEST_END();
   rtems_test_exit(0);
