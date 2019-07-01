@@ -525,9 +525,11 @@ endif
 
 if TEST_psxinttypes01
 psx_tests += psxinttypes01
-psxinttypes01_SOURCES = psxinttypes01/init.c
+#psxinttypes01_SOURCES = psxinttypes01/init.c 
+psxinttypes01_SOURCES = psxinttypes01/init.c ../../../../../newlib/b-sparc-rtems5-newlib/sparc-rtems5/newlib/libc/search/lib_a-ndbm.o
 psxinttypes01_CPPFLAGS = $(AM_CPPFLAGS) $(TEST_FLAGS_psxinttypes01) \
        $(support_includes)
+#psxintypes01_DEPENDENCIES = /home/varodek/development/newlib/b-sparc-rtems5-newlib/sparc-rtems5/newlib/libc/search/lib_a-ndbm.o
 endif
 
 if HAS_POSIX
