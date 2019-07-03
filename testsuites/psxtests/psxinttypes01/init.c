@@ -220,6 +220,8 @@ rtems_task Init(rtems_task_argument ignored)
   rtems_test_assert( result_strtoumax == 0 );
   rtems_test_assert( errno == EINVAL );
 
+printf("\nENTER NDBM \n");
+
   DBM *db;
 
   datum name = { NAME , sizeof(NAME) };
